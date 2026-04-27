@@ -35,11 +35,19 @@ except ImportError:
     print("  Instale com: pip3 install reportlab")
 
 class ImagePrintDialog:
-    def __init__(self, root):
+    def __init__(self, root, image_path=None):
         self.root = root
         self.root.title("Imprimir Imagens")
         self.root.geometry("1200x750")
         
+        self.image_path = image_path
+        
+        if self.image_path:
+           self.load_single_image(self.image_path)
+       else:
+           self.load_images_from_folder()
+
+
         # Configurar estilo
         style = ttk.Style()
         style.theme_use('clam')
@@ -97,7 +105,33 @@ class ImagePrintDialog:
         # Atualizar interface
         self.update_images_list()
         self.update_preview()
-    
+
+    def load_single_image(self, image_path):
+        """Carrega uma única imagem especificada"""
+        
+        # Verificar existência
+        if not os.path.exists(image_path):
+            messagebox.showerror("Erro", f"Arquivo não encontrado...")
+            return
+        
+        # Verificar extensão
+        if os.path.splitext(image_path)[1].lower() not in image_extensions:
+            messagebox.showerror("Erro", f"Formato não suportado...")
+            return
+        
+        # Adicionar à lista
+        self.selected_images.append({
+            'path': os.path.abspath(image_path),
+            'name': os.path.basename(image_path),
+            'copies': 1
+        })
+        
+        # Atualizar interface
+        self.update_images_list()
+        self.update_preview()
+
+
+
     def setup_ui(self):
         """Configura toda a interface"""
         
@@ -733,9 +767,21 @@ class ImagePrintDialog:
         c.save()
 
 def main():
+    # Novo: processar argumentos de linha de comando
+    image_path = None
+    
+    if len(sys.argv) > 1:
+        image_path = sys.argv[1]
+    
     root = tk.Tk()
-    app = ImagePrintDialog(root)
+    app = ImagePrintDialog(root, image_path=image_path)
     root.mainloop()
+
+
+#def main():
+#    root = tk.Tk()
+#    app = ImagePrintDialog(root)
+#    root.mainloop()
 
 if __name__ == "__main__":
     main()
