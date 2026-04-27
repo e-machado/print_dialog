@@ -1,6 +1,6 @@
 # Print Dialog - Simulador de Interface de Impressão
 
-Um programa Linux que recria a interface de impressão mostrada na imagem, permitindo simular e testar fluxos de impressão de imagens.
+Um programa Linux que recria a interface de impressão mostrada no Windows ao imprimir imagem, permitindo simular e testar fluxos de impressão de imagens.
 
 ## 📋 Requisitos
 
