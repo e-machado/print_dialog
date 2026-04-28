@@ -36,18 +36,19 @@ except ImportError:
 
 class ImagePrintDialog:
     def __init__(self, root, image_path=None):
+        """
+        Inicializa o diálogo de impressão
+        
+        Args:
+            root: Janela tkinter
+            image_path: (Opcional) Caminho para uma imagem específica.
+                       Se fornecido, carrega apenas essa imagem.
+                       Se None, escaneia a pasta atual.
+        """
         self.root = root
         self.root.title("Imprimir Imagens")
         self.root.geometry("1200x750")
         
-        self.image_path = image_path
-        
-        if self.image_path:
-           self.load_single_image(self.image_path)
-       else:
-           self.load_images_from_folder()
-
-
         # Configurar estilo
         style = ttk.Style()
         style.theme_use('clam')
@@ -57,6 +58,7 @@ class ImagePrintDialog:
         self.preview_images = {}
         self.cups_conn = None
         self.printers = []
+        self.image_path = image_path  # NOVO: armazenar caminho da imagem
         
         # Tentar conectar ao CUPS
         self.connect_cups()
@@ -64,8 +66,12 @@ class ImagePrintDialog:
         # Setup UI
         self.setup_ui()
         
-        # Carregar imagens da pasta atual
-        self.load_images_from_folder()
+        # Carregar imagens (uma única ou da pasta)
+        # NOVO: verificar se uma imagem foi passada como argumento
+        if self.image_path:
+            self.load_single_image(self.image_path)
+        else:
+            self.load_images_from_folder()
     
     def connect_cups(self):
         """Conecta ao CUPS e obtém lista de impressoras"""
@@ -105,33 +111,53 @@ class ImagePrintDialog:
         # Atualizar interface
         self.update_images_list()
         self.update_preview()
-
+    
+    # NOVO: Método para carregar uma única imagem (modo fast)
     def load_single_image(self, image_path):
-        """Carrega uma única imagem especificada"""
+        """
+        Carrega uma única imagem especificada
         
-        # Verificar existência
+        Uso: python3 print_images_real.py /caminho/para/imagem.jpg
+        
+        Vantagens:
+        - Mais rápido (não escaneia a pasta)
+        - Ideal para usar em scripts
+        - Menos consumo de CPU
+        
+        Args:
+            image_path: Caminho completo ou relativo da imagem
+        """
+        # Verificar se o arquivo existe
         if not os.path.exists(image_path):
-            messagebox.showerror("Erro", f"Arquivo não encontrado...")
+            messagebox.showerror("Erro", 
+                f"Arquivo não encontrado:\n{image_path}")
+            print(f"✗ Arquivo não encontrado: {image_path}")
             return
         
-        # Verificar extensão
+        # Verificar se é um arquivo de imagem
+        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
         if os.path.splitext(image_path)[1].lower() not in image_extensions:
-            messagebox.showerror("Erro", f"Formato não suportado...")
+            messagebox.showerror("Erro", 
+                f"Formato não suportado:\n{image_path}\n\n"
+                f"Formatos: {', '.join(image_extensions)}")
+            print(f"✗ Formato não suportado: {image_path}")
             return
         
-        # Adicionar à lista
+        # Adicionar imagem à lista
+        filename = os.path.basename(image_path)
         self.selected_images.append({
             'path': os.path.abspath(image_path),
-            'name': os.path.basename(image_path),
+            'name': filename,
             'copies': 1
         })
+        
+        print(f"✓ Imagem carregada: {filename}")
         
         # Atualizar interface
         self.update_images_list()
         self.update_preview()
 
-
-
+    
     def setup_ui(self):
         """Configura toda a interface"""
         
@@ -767,21 +793,24 @@ class ImagePrintDialog:
         c.save()
 
 def main():
-    # Novo: processar argumentos de linha de comando
+    """
+    Função principal
+    
+    Uso:
+        python3 print_images_real.py              # Modo normal: escaneia pasta
+        python3 print_images_real.py imagem.jpg   # Modo rápido: carrega uma imagem
+    """
+    # NOVO: verificar argumentos de linha de comando
     image_path = None
     
     if len(sys.argv) > 1:
+        # Se houver argumento, usar como caminho da imagem
         image_path = sys.argv[1]
     
     root = tk.Tk()
+    # NOVO: passar o caminho da imagem para a classe
     app = ImagePrintDialog(root, image_path=image_path)
     root.mainloop()
-
-
-#def main():
-#    root = tk.Tk()
-#    app = ImagePrintDialog(root)
-#    root.mainloop()
 
 if __name__ == "__main__":
     main()
