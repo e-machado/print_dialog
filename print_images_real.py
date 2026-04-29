@@ -47,7 +47,26 @@ class ImagePrintDialog:
         """
         self.root = root
         self.root.title("Imprimir Imagens")
-        self.root.geometry("1200x750")
+        
+        # NOVO: Detectar tamanho da tela para responsividade
+        try:
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            
+            # Usar 90% da tela, mínimo 800x600
+            window_width = max(800, int(screen_width * 0.9))
+            window_height = max(600, int(screen_height * 0.9))
+            
+            self.root.geometry(f"{window_width}x{window_height}")
+        except:
+            # Fallback se não conseguir detectar
+            self.root.geometry("1200x750")
+        
+        # NOVO: Definir tamanho mínimo para não cortar interface
+        self.root.minsize(800, 600)
+        
+        # NOVO: Fazer janela redimensionável
+        self.root.resizable(True, True)
         
         # Configurar estilo
         style = ttk.Style()
@@ -194,11 +213,30 @@ class ImagePrintDialog:
         self.create_footer(footer)
     
     def create_options_panel(self, parent):
-        """Cria painel de opções"""
+        """Cria painel de opções com scroll responsivo"""
+        
+        # NOVO: Criar frame com scrollbar para pequenos monitores
+        canvas = tk.Canvas(parent, bg="white", highlightthickness=0)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Frame dentro do canvas para conter as opções
+        options_frame = tk.Frame(canvas, bg="white")
+        canvas.create_window((0, 0), window=options_frame, anchor=tk.NW)
+        
+        # Atualizar scroll region quando o tamanho mudar
+        def update_scroll_region():
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        
+        options_frame.bind("<Configure>", lambda e: update_scroll_region())
         
         # Impressora
-        tk.Label(parent, text="Impressora:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5))
+        tk.Label(options_frame, text="Impressora:", font=("Arial", 9, "bold"),
+                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
         
         self.printer_var = tk.StringVar()
         if self.printers:
@@ -208,13 +246,13 @@ class ImagePrintDialog:
             self.printer_var.set("Nenhuma impressora")
             printers_list = ["Simular (PDF)"]
         
-        self.printer_combo = ttk.Combobox(parent, textvariable=self.printer_var,
+        self.printer_combo = ttk.Combobox(options_frame, textvariable=self.printer_var,
                                          values=printers_list, state="readonly")
-        self.printer_combo.pack(fill=tk.X, pady=(0, 15))
+        self.printer_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
         
         # Tamanho do papel
-        tk.Label(parent, text="Tamanho Papel:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5))
+        tk.Label(options_frame, text="Tamanho Papel:", font=("Arial", 9, "bold"),
+                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
         
         self.paper_var = tk.StringVar(value="A4")
         self.paper_sizes = {
@@ -224,63 +262,74 @@ class ImagePrintDialog:
             "Carta": (216, 279),
         }
         
-        paper_combo = ttk.Combobox(parent, textvariable=self.paper_var,
+        paper_combo = ttk.Combobox(options_frame, textvariable=self.paper_var,
                                    values=list(self.paper_sizes.keys()),
                                    state="readonly")
-        paper_combo.pack(fill=tk.X, pady=(0, 15))
+        paper_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
         paper_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
         
+        # NOVO: Orientação de página
+        tk.Label(options_frame, text="Orientação:", font=("Arial", 9, "bold"),
+                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
+        
+        self.orientation_var = tk.StringVar(value="Retrato")
+        orientation_combo = ttk.Combobox(options_frame, textvariable=self.orientation_var,
+                                        values=["Retrato", "Paisagem"],
+                                        state="readonly")
+        orientation_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
+        orientation_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
+        
         # Qualidade
-        tk.Label(parent, text="Qualidade:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5))
+        tk.Label(options_frame, text="Qualidade:", font=("Arial", 9, "bold"),
+                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
         
         self.quality_var = tk.StringVar(value="Normal")
-        quality_combo = ttk.Combobox(parent, textvariable=self.quality_var,
+        quality_combo = ttk.Combobox(options_frame, textvariable=self.quality_var,
                                      values=["Rascunho", "Normal", "Alta"],
                                      state="readonly")
-        quality_combo.pack(fill=tk.X, pady=(0, 15))
+        quality_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
         
         # Disposição
-        tk.Label(parent, text="Disposição:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5))
+        tk.Label(options_frame, text="Disposição:", font=("Arial", 9, "bold"),
+                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
         
         self.layout_var = tk.StringVar(value="1x1")
-        layout_combo = ttk.Combobox(parent, textvariable=self.layout_var,
+        layout_combo = ttk.Combobox(options_frame, textvariable=self.layout_var,
                                     values=["1x1", "2x1", "2x2", "3x3"],
                                     state="readonly")
-        layout_combo.pack(fill=tk.X, pady=(0, 15))
+        layout_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
         layout_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
         
         # Margens
-        tk.Label(parent, text="Margem (mm):", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5))
+        tk.Label(options_frame, text="Margem (mm):", font=("Arial", 9, "bold"),
+                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
         
         self.margin_var = tk.StringVar(value="10")
-        margin_spin = tk.Spinbox(parent, from_=0, to=50, textvariable=self.margin_var,
+        margin_spin = tk.Spinbox(options_frame, from_=0, to=50, textvariable=self.margin_var,
                                 width=10)
-        margin_spin.pack(fill=tk.X, pady=(0, 15))
+        margin_spin.pack(fill=tk.X, pady=(0, 15), padx=5)
         
         # Separador
-        sep = ttk.Separator(parent, orient=tk.HORIZONTAL)
-        sep.pack(fill=tk.X, pady=10)
+        sep = ttk.Separator(options_frame, orient=tk.HORIZONTAL)
+        sep.pack(fill=tk.X, pady=10, padx=5)
         
         # Lista de imagens
-        tk.Label(parent, text="Imagens:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5))
+        tk.Label(options_frame, text="Imagens:", font=("Arial", 9, "bold"),
+                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
         
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(parent)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # Scrollbar para lista
+        scrollbar_list = ttk.Scrollbar(options_frame)
+        scrollbar_list.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.images_listbox = tk.Listbox(parent, yscrollcommand=scrollbar.set,
+        self.images_listbox = tk.Listbox(options_frame, yscrollcommand=scrollbar_list.set,
                                         height=10, font=("Arial", 8))
-        self.images_listbox.pack(fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self.images_listbox.yview)
+        self.images_listbox.pack(fill=tk.BOTH, expand=True, padx=5)
+        scrollbar_list.config(command=self.images_listbox.yview)
         self.images_listbox.bind("<<ListboxSelect>>", lambda e: self.update_preview())
         
         # Cópias para imagem selecionada
-        copies_frame = tk.Frame(parent, bg="white")
-        copies_frame.pack(fill=tk.X, pady=(10, 0))
+        copies_frame = tk.Frame(options_frame, bg="white")
+        copies_frame.pack(fill=tk.X, pady=(10, 0), padx=5)
         
         tk.Label(copies_frame, text="Cópias:", font=("Arial", 8),
                 bg="white").pack(side=tk.LEFT)
@@ -294,8 +343,8 @@ class ImagePrintDialog:
                  command=self.update_selected_copies).pack(side=tk.RIGHT, padx=(5, 0))
         
         # Botões
-        btn_frame = tk.Frame(parent, bg="white")
-        btn_frame.pack(fill=tk.X, pady=(10, 0))
+        btn_frame = tk.Frame(options_frame, bg="white")
+        btn_frame.pack(fill=tk.X, pady=(10, 0), padx=5)
         
         tk.Button(btn_frame, text="Adicionar", width=12,
                  command=self.add_images).pack(pady=2)
@@ -381,7 +430,7 @@ class ImagePrintDialog:
             messagebox.showerror("Erro", "Número de cópias inválido")
     
     def update_preview(self):
-        """Atualiza preview das imagens na disposição"""
+        """Atualiza preview das imagens na disposição com proporções corretas do papel"""
         if not self.selected_images:
             self.preview_canvas.delete("all")
             self.preview_canvas.create_text(
@@ -396,24 +445,72 @@ class ImagePrintDialog:
         layout_str = self.layout_var.get()
         cols, rows = map(int, layout_str.split("x"))
         
+        # NOVO: Obter tamanho e orientação do papel
+        paper_name = self.paper_var.get()
+        paper_width, paper_height = self.paper_sizes[paper_name]  # mm
+        
+        orientation = self.orientation_var.get()
+        if orientation == "Paisagem":
+            # Trocar dimensões para paisagem
+            paper_width, paper_height = paper_height, paper_width
+        
+        # NOVO: Calcular proporção do papel
+        paper_ratio = paper_width / paper_height
+        
         # Limpar canvas
         self.preview_canvas.delete("all")
         
-        # Desenhar fundo
+        # Desenhar fundo cinza (para contrastar com papel branco)
+        canvas_w = self.preview_canvas.winfo_width()
+        canvas_h = self.preview_canvas.winfo_height()
         self.preview_canvas.create_rectangle(
-            0, 0,
-            self.preview_canvas.winfo_width(),
-            self.preview_canvas.winfo_height(),
-            fill="white", outline="#ccc"
+            0, 0, canvas_w, canvas_h,
+            fill="#e0e0e0", outline="#ccc"
         )
         
-        # Calcular tamanho de cada célula
-        margin = int(self.margin_var.get()) * 2  # pixels
-        canvas_w = self.preview_canvas.winfo_width() - margin
-        canvas_h = self.preview_canvas.winfo_height() - margin
+        # NOVO: Calcular tamanho do "papel" para caber no canvas mantendo proporção
+        padding = 20
+        available_w = canvas_w - padding * 2
+        available_h = canvas_h - padding * 2
         
-        cell_w = canvas_w / cols
-        cell_h = canvas_h / rows
+        # Calcular dimensões do papel mantendo proporção
+        if available_w / available_h > paper_ratio:
+            # Canvas é mais largo que o papel
+            page_h = available_h
+            page_w = int(page_h * paper_ratio)
+        else:
+            # Canvas é mais alto que o papel
+            page_w = available_w
+            page_h = int(page_w / paper_ratio)
+        
+        # Centralizar o papel no canvas
+        page_x = int((canvas_w - page_w) / 2)
+        page_y = int((canvas_h - page_h) / 2)
+        
+        # NOVO: Desenhar retângulo representando a página
+        self.preview_canvas.create_rectangle(
+            page_x, page_y, page_x + page_w, page_y + page_h,
+            fill="white", outline="#333", width=2
+        )
+        
+        # NOVO: Adicionar label de orientação
+        orientation_text = f"{paper_name} - {orientation}"
+        self.preview_canvas.create_text(
+            page_x + page_w / 2, page_y - 10,
+            text=orientation_text,
+            font=("Arial", 9, "bold"),
+            fill="#333"
+        )
+        
+        # Calcular tamanho de cada célula dentro da página
+        margin = int(self.margin_var.get())
+        margin_pixels = int(margin / 210 * page_w)  # Converter mm para pixels baseado em A4
+        
+        available_page_w = page_w - margin_pixels * 2
+        available_page_h = page_h - margin_pixels * 2
+        
+        cell_w = available_page_w / cols
+        cell_h = available_page_h / rows
         
         # Obter todas as imagens com cópias repetidas
         all_images = []
@@ -440,8 +537,8 @@ class ImagePrintDialog:
             row = pos // cols
             col = pos % cols
             
-            x = int(margin/2 + col * cell_w + 5)
-            y = int(margin/2 + row * cell_h + 5)
+            x = int(page_x + margin_pixels + col * cell_w + 5)
+            y = int(page_y + margin_pixels + row * cell_h + 5)
             w = int(cell_w - 10)
             h = int(cell_h - 10)
             
@@ -592,6 +689,12 @@ class ImagePrintDialog:
                 from reportlab.lib.pagesizes import letter
                 pagesize = letter
             
+            # NOVO: Aplicar orientação
+            orientation = self.orientation_var.get()
+            if orientation == "Paisagem":
+                # Trocar dimensões para paisagem (rotacionar 90 graus)
+                pagesize = (pagesize[1], pagesize[0])
+            
             # Margem em pixels
             margin_mm = int(self.margin_var.get())
             from reportlab.lib.units import mm
@@ -739,6 +842,11 @@ class ImagePrintDialog:
         else:
             from reportlab.lib.pagesizes import letter
             pagesize = letter
+        
+        # NOVO: Aplicar orientação também em generate_pdf_temp
+        orientation = self.orientation_var.get()
+        if orientation == "Paisagem":
+            pagesize = (pagesize[1], pagesize[0])
         
         margin_mm = int(self.margin_var.get())
         from reportlab.lib.units import mm
