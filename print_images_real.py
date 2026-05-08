@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Print Dialog Funcional
-Carrega impressoras CUPS reais, imagens da pasta atual, 
-mostra preview do layout e envia para impressão
+Sistema de Impressão de Imagens
+UI: 1.py  |  Backend: 2.py  |  Layout: grid (header/content/footer sempre visíveis)
 """
 
 import tkinter as tk
@@ -11,914 +10,793 @@ from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
 import os
 import sys
-from pathlib import Path
-from io import BytesIO
+import json
 import traceback
 
-# Tentar importar dependências
+# ── Dependências opcionais ────────────────────────────────────────────────────
 try:
     import cups
     CUPS_AVAILABLE = True
 except ImportError:
     CUPS_AVAILABLE = False
-    print("⚠ Aviso: pycups não está instalado")
-    print("  Instale com: sudo apt-get install python3-cups ou pip3 install pycups")
+    print("⚠ pycups não instalado: sudo apt-get install python3-cups")
 
 try:
     from reportlab.lib.pagesizes import A4, A3, A5, letter
-    from reportlab.lib.units import inch
+    from reportlab.lib.units import mm
     from reportlab.pdfgen import canvas as reportlab_canvas
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
-    print("⚠ Aviso: reportlab não está instalado")
-    print("  Instale com: pip3 install reportlab")
+    print("⚠ reportlab não instalado: pip3 install reportlab")
+
+# ── Temas ─────────────────────────────────────────────────────────────────────
+THEMES = {
+    'light': {
+        'bg':             '#ffffff',
+        'panel_bg':       '#f5f5f5',
+        'fg':             '#333333',
+        'fg_secondary':   '#666666',
+        'header_bg':      '#0066CC',
+        'header_fg':      '#ffffff',
+        'canvas_bg':      '#e0e0e0',
+        'listbox_bg':     '#ffffff',
+        'listbox_fg':     '#333333',
+        'btn_bg':         '#e0e0e0',
+        'btn_fg':         '#333333',
+        'primary_btn_bg': '#0066CC',
+        'primary_btn_fg': '#ffffff',
+        'border':         '#cccccc',
+        'preview_paper':  '#ffffff',
+        'preview_text':   '#333333',
+        'theme_btn_text': '🌙 Escuro',
+        'spinbox_bg':     '#ffffff',
+        'spinbox_fg':     '#333333',
+    },
+    'dark': {
+        'bg':             '#1e1e2e',
+        'panel_bg':       '#181825',
+        'fg':             '#cdd6f4',
+        'fg_secondary':   '#a6adc8',
+        'header_bg':      '#11111b',
+        'header_fg':      '#cdd6f4',
+        'canvas_bg':      '#313244',
+        'listbox_bg':     '#1e1e2e',
+        'listbox_fg':     '#cdd6f4',
+        'btn_bg':         '#45475a',
+        'btn_fg':         '#cdd6f4',
+        'primary_btn_bg': '#89b4fa',
+        'primary_btn_fg': '#1e1e2e',
+        'border':         '#313244',
+        'preview_paper':  '#313244',
+        'preview_text':   '#cdd6f4',
+        'theme_btn_text': '☀ Claro',
+        'spinbox_bg':     '#1e1e2e',
+        'spinbox_fg':     '#cdd6f4',
+    },
+}
+
+CONFIG_FILE = "print_config.json"
+
 
 class ImagePrintDialog:
     def __init__(self, root, image_path=None):
-        """
-        Inicializa o diálogo de impressão
-        
-        Args:
-            root: Janela tkinter
-            image_path: (Opcional) Caminho para uma imagem específica.
-                       Se fornecido, carrega apenas essa imagem.
-                       Se None, escaneia a pasta atual.
-        """
         self.root = root
-        self.root.title("Imprimir Imagens")
-        
-        # NOVO: Detectar tamanho da tela para responsividade
+        self.root.title("Imprimir Imagens Pro")
+
+        # Persistência + tema
+        self.current_theme = self.load_config().get('theme', 'light')
+        self._tw = []   # [(widget, {prop: color_key})]
+
+        # Tamanho responsivo
         try:
-            screen_width = self.root.winfo_screenwidth()
-            screen_height = self.root.winfo_screenheight()
-            
-            # Usar 90% da tela, mínimo 800x600
-            window_width = max(800, int(screen_width * 0.9))
-            window_height = max(600, int(screen_height * 0.9))
-            
-            self.root.geometry(f"{window_width}x{window_height}")
-        except:
-            # Fallback se não conseguir detectar
-            self.root.geometry("1200x750")
-        
-        # NOVO: Definir tamanho mínimo para não cortar interface
-        self.root.minsize(800, 600)
-        
-        # NOVO: Fazer janela redimensionável
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            ww = min(1100, int(sw * 0.82))
+            wh = min(800,  int(sh * 0.82))
+            self.root.geometry(f"{ww}x{wh}")
+        except Exception:
+            self.root.geometry("1000x680")
+
+        self.root.minsize(700, 500)
         self.root.resizable(True, True)
-        
-        # Configurar estilo
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Variáveis
+
+        # Estado
         self.selected_images = []
-        self.preview_images = {}
-        self.cups_conn = None
-        self.printers = []
-        self.image_path = image_path  # NOVO: armazenar caminho da imagem
-        
-        # Tentar conectar ao CUPS
+        self.preview_images  = {}
+        self.cups_conn       = None
+        self.printers        = []
+        self.image_path      = image_path
+        self.current_page    = 0
+
         self.connect_cups()
-        
-        # Setup UI
         self.setup_ui()
-        
-        # Carregar imagens (uma única ou da pasta)
-        # NOVO: verificar se uma imagem foi passada como argumento
+        self._apply_theme()   # aplica tema após criar todos os widgets
+
         if self.image_path:
             self.load_single_image(self.image_path)
         else:
             self.load_images_from_folder()
-    
+
+    # ── Persistência ─────────────────────────────────────────────────────────
+    def load_config(self):
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+
+    def save_config(self):
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump({'theme': self.current_theme}, f)
+        except Exception:
+            pass
+
+    # ── Gerenciamento de tema ─────────────────────────────────────────────────
+    def c(self, key: str) -> str:
+        return THEMES[self.current_theme][key]
+
+    def _reg(self, widget, **color_map):
+        """Registra widget para recoloração ao trocar tema."""
+        self._tw.append((widget, color_map))
+        return widget
+
+    def toggle_theme(self):
+        self.current_theme = 'dark' if self.current_theme == 'light' else 'light'
+        self.save_config()
+        self._apply_theme()
+        self.update_preview()
+
+    def _apply_theme(self):
+        colors = THEMES[self.current_theme]
+        self.root.config(bg=colors['bg'])
+
+        for widget, color_map in self._tw:
+            try:
+                cfg = {prop: colors[key] for prop, key in color_map.items()}
+                # Corrige bordas e estados ativos conforme o tipo de widget
+                if 'highlightbackground' in widget.keys():
+                    cfg['highlightbackground'] = colors['border']
+                if isinstance(widget, tk.Button):
+                    cfg['activebackground'] = colors['btn_bg']
+                    cfg['activeforeground'] = colors['fg']
+                widget.config(**cfg)
+            except Exception:
+                pass
+
+        try:
+            self.theme_btn.config(text=self.c('theme_btn_text'))
+        except Exception:
+            pass
+
+        self._update_ttk_styles()
+
+    def _update_ttk_styles(self):
+        style = ttk.Style()
+        style.theme_use('default')  # base neutra, evita cores do sistema
+        bg  = self.c('panel_bg')
+        fg  = self.c('fg')
+        sbg = self.c('spinbox_bg')
+        bdr = self.c('border')
+
+        style.configure('TCombobox',
+                         fieldbackground=sbg, background=bg,
+                         foreground=fg, arrowcolor=fg,
+                         selectbackground=sbg, selectforeground=fg)
+        style.map('TCombobox',
+                  fieldbackground=[('readonly', sbg)],
+                  foreground=[('readonly', fg)])
+        style.configure('TSeparator', background=bdr)
+        style.configure('TScrollbar',
+                         background=self.c('btn_bg'),
+                         troughcolor=self.c('canvas_bg'),
+                         arrowcolor=fg)
+
+    # =========================================================================
+    # LAYOUT PRINCIPAL — grid no root garante footer/header sempre visíveis
+    #
+    #   row 0 │ header       (altura fixa, grid_propagate=False)
+    #   row 1 │ PanedWindow  (weight=1, expande livremente)
+    #   row 2 │ footer       (altura fixa, grid_propagate=False)
+    # =========================================================================
+    def setup_ui(self):
+        self.root.grid_rowconfigure(1, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
+
+        # ── Header (row 0) ────────────────────────────────────────────────────
+        header = self._reg(tk.Frame(self.root, height=50), bg='header_bg')
+        header.grid(row=0, column=0, sticky='ew')
+        header.grid_propagate(False)
+        header.grid_columnconfigure(1, weight=1)  # espaço elástico no meio
+
+        self._reg(
+            tk.Label(header, text="📄 Sistema de Impressão",
+                     font=("Arial", 11, "bold")),
+            fg='header_fg', bg='header_bg'
+        ).grid(row=0, column=0, padx=15, pady=12, sticky='w')
+
+        self.theme_btn = self._reg(
+            tk.Button(header, font=("Arial", 9), relief=tk.FLAT,
+                      cursor="hand2", command=self.toggle_theme, padx=10),
+            bg='header_bg', fg='header_fg'
+        )
+        self.theme_btn.grid(row=0, column=2, padx=15, pady=10, sticky='e')
+
+        # ── Área central (row 1) — PanedWindow redimensionável ────────────────
+        paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        paned.grid(row=1, column=0, sticky='nsew', padx=6, pady=4)
+
+        # Painel esquerdo
+        left = self._reg(tk.Frame(paned, width=280), bg='panel_bg')
+        left.grid_rowconfigure(0, weight=1)
+        left.grid_columnconfigure(0, weight=1)
+        paned.add(left, weight=0)
+        self.create_options_panel(left)
+
+        # Painel direito
+        right = self._reg(tk.Frame(paned), bg='bg')
+        right.grid_rowconfigure(1, weight=1)
+        right.grid_columnconfigure(0, weight=1)
+        paned.add(right, weight=1)
+        self.create_preview_panel(right)
+
+        # ── Footer (row 2) — sempre visível por estar fixo no grid ───────────
+        footer = self._reg(tk.Frame(self.root, height=48), bg='bg')
+        footer.grid(row=2, column=0, sticky='ew', padx=8, pady=(2, 6))
+        footer.grid_propagate(False)
+        self.create_footer(footer)
+
+    # =========================================================================
+    # PAINEL DE OPÇÕES — canvas scrollável com grid (scrollbar nunca some)
+    # =========================================================================
+    def create_options_panel(self, parent):
+        # grid: canvas col 0, scrollbar col 1 — ambos visíveis sempre
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        vscroll = ttk.Scrollbar(parent, orient=tk.VERTICAL)
+        vscroll.grid(row=0, column=1, sticky='ns')
+
+        canvas = self._reg(tk.Canvas(parent, highlightthickness=0), bg='panel_bg')
+        canvas.grid(row=0, column=0, sticky='nsew')
+        canvas.configure(yscrollcommand=vscroll.set)
+        vscroll.configure(command=canvas.yview)
+
+        scroll_frame = self._reg(tk.Frame(canvas), bg='panel_bg')
+        win_id = canvas.create_window((0, 0), window=scroll_frame, anchor='nw')
+
+        # Scrollregion acompanha conteúdo; largura acompanha canvas
+        scroll_frame.bind('<Configure>',
+                          lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>',
+                    lambda e: canvas.itemconfig(win_id, width=e.width))
+
+        # Roda do mouse
+        canvas.bind_all('<MouseWheel>',
+                        lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units'))
+
+        self.create_widgets_inside_scroll(scroll_frame)
+
+    def create_widgets_inside_scroll(self, opts):
+        """Todos os controles de impressão dentro do painel scrollável."""
+
+        def sec(text):
+            self._reg(
+                tk.Label(opts, text=text, font=("Arial", 9, "bold")),
+                bg='panel_bg', fg='fg'
+            ).pack(anchor=tk.W, padx=8, pady=(10, 2))
+
+        def combo(var, values, callback=None):
+            cb = ttk.Combobox(opts, textvariable=var, values=values, state='readonly')
+            cb.pack(fill=tk.X, padx=8, pady=(0, 6))
+            if callback:
+                cb.bind('<<ComboboxSelected>>', lambda e: callback())
+            return cb
+
+        # Impressora
+        sec("Impressora:")
+        self.printer_var = tk.StringVar()
+        plist = self.printers if self.printers else ["Simular (PDF)"]
+        self.printer_var.set(plist[0])
+        combo(self.printer_var, plist)
+
+        # Papel
+        sec("Tamanho Papel:")
+        self.paper_var   = tk.StringVar(value="A4")
+        self.paper_sizes = {"A4": (210, 297), "A3": (297, 420),
+                            "A5": (148, 210), "Carta": (216, 279)}
+        combo(self.paper_var, list(self.paper_sizes.keys()), self.update_preview)
+
+        # Orientação
+        sec("Orientação:")
+        self.orientation_var = tk.StringVar(value="Retrato")
+        combo(self.orientation_var, ["Retrato", "Paisagem"], self.update_preview)
+
+        # Qualidade
+        sec("Qualidade:")
+        self.quality_var = tk.StringVar(value="Normal")
+        combo(self.quality_var, ["Rascunho", "Normal", "Alta"])
+
+        # Disposição
+        sec("Disposição:")
+        self.layout_var = tk.StringVar(value="1x1")
+        combo(self.layout_var, ["1x1", "2x1", "2x2", "3x3"], self.update_preview)
+
+        # Margem
+        sec("Margem (mm):")
+        self.margin_var = tk.StringVar(value="10")
+        self._reg(
+            tk.Spinbox(opts, from_=0, to=50, textvariable=self.margin_var,
+                       command=self.update_preview),
+            bg='spinbox_bg', fg='spinbox_fg'
+        ).pack(fill=tk.X, padx=8, pady=(0, 6))
+
+        ttk.Separator(opts, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=8)
+
+        # Lista de imagens
+        sec("Imagens:")
+        list_frame = self._reg(tk.Frame(opts), bg='panel_bg')
+        list_frame.pack(fill=tk.X, padx=8)
+
+        # Scrollbar da lista antes do Listbox no pack (garante espaço)
+        sb_list = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        sb_list.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.images_listbox = self._reg(
+            tk.Listbox(list_frame, yscrollcommand=sb_list.set,
+                       height=6, font=("Arial", 8),
+                       relief=tk.FLAT, highlightthickness=1),
+            bg='listbox_bg', fg='listbox_fg',
+            selectbackground='primary_btn_bg', selectforeground='primary_btn_fg',
+            highlightbackground='border'
+        )
+        self.images_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        sb_list.configure(command=self.images_listbox.yview)
+        self.images_listbox.bind('<<ListboxSelect>>', lambda e: self.update_preview())
+
+        # Cópias
+        cf = self._reg(tk.Frame(opts), bg='panel_bg')
+        cf.pack(fill=tk.X, padx=8, pady=(6, 0))
+
+        self._reg(
+            tk.Label(cf, text="Cópias:", font=("Arial", 8)),
+            bg='panel_bg', fg='fg'
+        ).pack(side=tk.LEFT)
+
+        self.copies_var = tk.StringVar(value="1")
+        self._reg(
+            tk.Spinbox(cf, from_=1, to=100, textvariable=self.copies_var, width=5),
+            bg='spinbox_bg', fg='spinbox_fg'
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        self._reg(
+            tk.Button(cf, text="Atualizar", font=("Arial", 8),
+                      command=self.update_selected_copies),
+            bg='btn_bg', fg='btn_fg'
+        ).pack(side=tk.RIGHT)
+
+        # Botões da lista
+        bf = self._reg(tk.Frame(opts), bg='panel_bg')
+        bf.pack(fill=tk.X, padx=8, pady=(6, 10))
+
+        for text, cmd in [("＋ Adicionar",  self.add_images),
+                          ("🗑 Remover",    self.remove_image),
+                          ("✖ Limpar Tudo", self.clear_all)]:
+            self._reg(
+                tk.Button(bf, text=text, anchor='w', font=("Arial", 8), command=cmd),
+                bg='btn_bg', fg='btn_fg'
+            ).pack(fill=tk.X, pady=2)
+
+    # =========================================================================
+    # PAINEL DE PREVIEW — info bar + canvas expansível + nav
+    # =========================================================================
+    def create_preview_panel(self, parent):
+        # row 0: info bar  (fixa)
+        # row 1: canvas    (expande)
+        # row 2: nav       (fixa)
+        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        # Info bar
+        info_frame = self._reg(tk.Frame(parent), bg='bg')
+        info_frame.grid(row=0, column=0, sticky='ew', pady=(2, 4))
+
+        self._reg(
+            tk.Label(info_frame, text="Preview de Impressão",
+                     font=("Arial", 10, "bold")),
+            bg='bg', fg='fg'
+        ).pack(side=tk.LEFT)
+
+        self.info_label = self._reg(
+            tk.Label(info_frame, text="", font=("Arial", 8)),
+            bg='bg', fg='fg_secondary'
+        )
+        self.info_label.pack(side=tk.LEFT, padx=10)
+
+        # Canvas de preview
+        self.preview_canvas = self._reg(
+            tk.Canvas(parent, highlightthickness=1),
+            bg='canvas_bg', highlightbackground='border'
+        )
+        self.preview_canvas.grid(row=1, column=0, sticky='nsew')
+
+        # Barra de navegação
+        nav_frame = self._reg(tk.Frame(parent), bg='bg')
+        nav_frame.grid(row=2, column=0, sticky='ew', pady=(4, 2))
+
+        self.page_label = self._reg(
+            tk.Label(nav_frame, text="Página 1 de 1", font=("Arial", 9)),
+            bg='bg', fg='fg'
+        )
+        self.page_label.pack(side=tk.LEFT)
+
+        for text, delta in [("◀", -1), ("▶", 1)]:
+            self._reg(
+                tk.Button(nav_frame, text=text, width=3,
+                          command=lambda d=delta: self.change_page(d)),
+                bg='btn_bg', fg='btn_fg'
+            ).pack(side=tk.LEFT, padx=3)
+
+    # =========================================================================
+    # FOOTER — grid_propagate=False garante altura fixa, nunca cortado
+    # =========================================================================
+    def create_footer(self, parent):
+        parent.grid_columnconfigure(1, weight=1)  # espaço central elástico
+
+        self._reg(
+            tk.Button(parent, text="Visualizar PDF", command=self.generate_pdf),
+            bg='btn_bg', fg='btn_fg'
+        ).grid(row=0, column=0, padx=(4, 2), pady=8, sticky='w')
+
+        # coluna 1 = espaço elástico
+
+        self._reg(
+            tk.Button(parent, text="Cancelar", width=12, command=self.root.quit),
+            bg='btn_bg', fg='btn_fg'
+        ).grid(row=0, column=2, padx=2, pady=8, sticky='e')
+
+        self._reg(
+            tk.Button(parent, text="🖨  Imprimir", font=("Arial", 10, "bold"),
+                      width=14, command=self.print_action),
+            bg='primary_btn_bg', fg='primary_btn_fg'
+        ).grid(row=0, column=3, padx=(2, 4), pady=8, sticky='e')
+
+    # =========================================================================
+    # BACKEND — CUPS, imagens, preview, PDF, impressão  (de 2.py na íntegra)
+    # =========================================================================
+
+    # ── CUPS ──────────────────────────────────────────────────────────────────
     def connect_cups(self):
-        """Conecta ao CUPS e obtém lista de impressoras"""
         if not CUPS_AVAILABLE:
             return
-        
         try:
             self.cups_conn = cups.Connection()
-            printers_dict = self.cups_conn.getPrinters()
-            self.printers = list(printers_dict.keys())
-            print(f"✓ CUPS conectado. Impressoras encontradas: {self.printers}")
+            self.printers  = list(self.cups_conn.getPrinters().keys())
+            print(f"✓ CUPS conectado. Impressoras: {self.printers}")
         except Exception as e:
             print(f"✗ Erro ao conectar CUPS: {e}")
             self.cups_conn = None
-            self.printers = []
-    
+            self.printers  = []
+
+    # ── Carregar imagens ──────────────────────────────────────────────────────
     def load_images_from_folder(self):
-        """Carrega imagens da pasta atual"""
-        current_dir = os.getcwd()
-        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
-        
-        print(f"Procurando imagens em: {current_dir}")
-        
+        exts = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
+        cwd  = os.getcwd()
+        print(f"Procurando imagens em: {cwd}")
         try:
-            for file in sorted(os.listdir(current_dir)):
-                if os.path.splitext(file)[1].lower() in image_extensions:
-                    full_path = os.path.join(current_dir, file)
-                    self.selected_images.append({
-                        'path': full_path,
-                        'name': file,
-                        'copies': 1
-                    })
-                    print(f"  ✓ Encontrada: {file}")
+            for f in sorted(os.listdir(cwd)):
+                if os.path.splitext(f)[1].lower() in exts:
+                    full = os.path.join(cwd, f)
+                    self.selected_images.append({'path': full, 'name': f, 'copies': 1})
+                    print(f"  ✓ {f}")
         except Exception as e:
-            print(f"✗ Erro ao carregar imagens: {e}")
-        
-        # Atualizar interface
-        self.update_images_list()
-        self.update_preview()
-    
-    # NOVO: Método para carregar uma única imagem (modo fast)
-    def load_single_image(self, image_path):
-        """
-        Carrega uma única imagem especificada
-        
-        Uso: python3 print_images_real.py /caminho/para/imagem.jpg
-        
-        Vantagens:
-        - Mais rápido (não escaneia a pasta)
-        - Ideal para usar em scripts
-        - Menos consumo de CPU
-        
-        Args:
-            image_path: Caminho completo ou relativo da imagem
-        """
-        # Verificar se o arquivo existe
-        if not os.path.exists(image_path):
-            messagebox.showerror("Erro", 
-                f"Arquivo não encontrado:\n{image_path}")
-            print(f"✗ Arquivo não encontrado: {image_path}")
-            return
-        
-        # Verificar se é um arquivo de imagem
-        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
-        if os.path.splitext(image_path)[1].lower() not in image_extensions:
-            messagebox.showerror("Erro", 
-                f"Formato não suportado:\n{image_path}\n\n"
-                f"Formatos: {', '.join(image_extensions)}")
-            print(f"✗ Formato não suportado: {image_path}")
-            return
-        
-        # Adicionar imagem à lista
-        filename = os.path.basename(image_path)
-        self.selected_images.append({
-            'path': os.path.abspath(image_path),
-            'name': filename,
-            'copies': 1
-        })
-        
-        print(f"✓ Imagem carregada: {filename}")
-        
-        # Atualizar interface
+            print(f"✗ Erro: {e}")
         self.update_images_list()
         self.update_preview()
 
-    
-    def setup_ui(self):
-        """Configura toda a interface"""
-        
-        # Header
-        header = tk.Frame(self.root, bg="#0066CC", height=60)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        
-        title = tk.Label(header, text="📄 Imprimir Imagens - Sistema Real de Impressão",
-                        font=("Arial", 12, "bold"), fg="white", bg="#0066CC")
-        title.pack(side=tk.LEFT, padx=15, pady=10)
-        
-        # Main content
-        main = tk.Frame(self.root, bg="white")
-        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Left panel - Options
-        left_panel = tk.Frame(main, bg="white", width=250)
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 10))
-        left_panel.pack_propagate(False)
-        
-        self.create_options_panel(left_panel)
-        
-        # Right panel - Preview
-        right_panel = tk.Frame(main, bg="white")
-        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        
-        self.create_preview_panel(right_panel)
-        
-        # Footer
-        footer = tk.Frame(self.root, bg="white")
-        footer.pack(fill=tk.X, padx=10, pady=(0, 10))
-        
-        self.create_footer(footer)
-    
-    def create_options_panel(self, parent):
-        """Cria painel de opções com scroll responsivo"""
-        
-        # NOVO: Criar frame com scrollbar para pequenos monitores
-        canvas = tk.Canvas(parent, bg="white", highlightthickness=0)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Frame dentro do canvas para conter as opções
-        options_frame = tk.Frame(canvas, bg="white")
-        canvas.create_window((0, 0), window=options_frame, anchor=tk.NW)
-        
-        # Atualizar scroll region quando o tamanho mudar
-        def update_scroll_region():
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        
-        options_frame.bind("<Configure>", lambda e: update_scroll_region())
-        
-        # Impressora
-        tk.Label(options_frame, text="Impressora:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
-        
-        self.printer_var = tk.StringVar()
-        if self.printers:
-            self.printer_var.set(self.printers[0])
-            printers_list = self.printers
-        else:
-            self.printer_var.set("Nenhuma impressora")
-            printers_list = ["Simular (PDF)"]
-        
-        self.printer_combo = ttk.Combobox(options_frame, textvariable=self.printer_var,
-                                         values=printers_list, state="readonly")
-        self.printer_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
-        
-        # Tamanho do papel
-        tk.Label(options_frame, text="Tamanho Papel:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
-        
-        self.paper_var = tk.StringVar(value="A4")
-        self.paper_sizes = {
-            "A4": (210, 297),      # mm
-            "A3": (297, 420),
-            "A5": (148, 210),
-            "Carta": (216, 279),
-        }
-        
-        paper_combo = ttk.Combobox(options_frame, textvariable=self.paper_var,
-                                   values=list(self.paper_sizes.keys()),
-                                   state="readonly")
-        paper_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
-        paper_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
-        
-        # NOVO: Orientação de página
-        tk.Label(options_frame, text="Orientação:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
-        
-        self.orientation_var = tk.StringVar(value="Retrato")
-        orientation_combo = ttk.Combobox(options_frame, textvariable=self.orientation_var,
-                                        values=["Retrato", "Paisagem"],
-                                        state="readonly")
-        orientation_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
-        orientation_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
-        
-        # Qualidade
-        tk.Label(options_frame, text="Qualidade:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
-        
-        self.quality_var = tk.StringVar(value="Normal")
-        quality_combo = ttk.Combobox(options_frame, textvariable=self.quality_var,
-                                     values=["Rascunho", "Normal", "Alta"],
-                                     state="readonly")
-        quality_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
-        
-        # Disposição
-        tk.Label(options_frame, text="Disposição:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
-        
-        self.layout_var = tk.StringVar(value="1x1")
-        layout_combo = ttk.Combobox(options_frame, textvariable=self.layout_var,
-                                    values=["1x1", "2x1", "2x2", "3x3"],
-                                    state="readonly")
-        layout_combo.pack(fill=tk.X, pady=(0, 15), padx=5)
-        layout_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
-        
-        # Margens
-        tk.Label(options_frame, text="Margem (mm):", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
-        
-        self.margin_var = tk.StringVar(value="10")
-        margin_spin = tk.Spinbox(options_frame, from_=0, to=50, textvariable=self.margin_var,
-                                width=10)
-        margin_spin.pack(fill=tk.X, pady=(0, 15), padx=5)
-        
-        # Separador
-        sep = ttk.Separator(options_frame, orient=tk.HORIZONTAL)
-        sep.pack(fill=tk.X, pady=10, padx=5)
-        
-        # Lista de imagens
-        tk.Label(options_frame, text="Imagens:", font=("Arial", 9, "bold"),
-                bg="white").pack(anchor=tk.W, pady=(0, 5), padx=5)
-        
-        # Scrollbar para lista
-        scrollbar_list = ttk.Scrollbar(options_frame)
-        scrollbar_list.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.images_listbox = tk.Listbox(options_frame, yscrollcommand=scrollbar_list.set,
-                                        height=10, font=("Arial", 8))
-        self.images_listbox.pack(fill=tk.BOTH, expand=True, padx=5)
-        scrollbar_list.config(command=self.images_listbox.yview)
-        self.images_listbox.bind("<<ListboxSelect>>", lambda e: self.update_preview())
-        
-        # Cópias para imagem selecionada
-        copies_frame = tk.Frame(options_frame, bg="white")
-        copies_frame.pack(fill=tk.X, pady=(10, 0), padx=5)
-        
-        tk.Label(copies_frame, text="Cópias:", font=("Arial", 8),
-                bg="white").pack(side=tk.LEFT)
-        
-        self.copies_var = tk.StringVar(value="1")
-        copies_spin = tk.Spinbox(copies_frame, from_=1, to=100,
-                                textvariable=self.copies_var, width=5)
-        copies_spin.pack(side=tk.LEFT, padx=(5, 0))
-        
-        tk.Button(copies_frame, text="Atualizar", width=8,
-                 command=self.update_selected_copies).pack(side=tk.RIGHT, padx=(5, 0))
-        
-        # Botões
-        btn_frame = tk.Frame(options_frame, bg="white")
-        btn_frame.pack(fill=tk.X, pady=(10, 0), padx=5)
-        
-        tk.Button(btn_frame, text="Adicionar", width=12,
-                 command=self.add_images).pack(pady=2)
-        tk.Button(btn_frame, text="Remover", width=12,
-                 command=self.remove_image).pack(pady=2)
-        tk.Button(btn_frame, text="Limpar Tudo", width=12,
-                 command=self.clear_all).pack(pady=2)
-    
-    def create_preview_panel(self, parent):
-        """Cria painel de preview"""
-        
-        # Info
-        info_frame = tk.Frame(parent, bg="white")
-        info_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        tk.Label(info_frame, text="Preview de Impressão",
-                font=("Arial", 10, "bold"), bg="white").pack(side=tk.LEFT)
-        
-        self.info_label = tk.Label(info_frame, text="",
-                                  font=("Arial", 8), fg="#666", bg="white")
-        self.info_label.pack(side=tk.LEFT, padx=(10, 0))
-        
-        # Canvas de preview
-        self.preview_canvas = tk.Canvas(parent, bg="white", relief=tk.SUNKEN,
-                                       highlightthickness=1, highlightbackground="#ccc")
-        self.preview_canvas.pack(fill=tk.BOTH, expand=True)
-        
-        # Navegação
-        nav_frame = tk.Frame(parent, bg="white")
-        nav_frame.pack(fill=tk.X, pady=(10, 0))
-        
-        self.page_label = tk.Label(nav_frame, text="Página 1",
-                                   font=("Arial", 9), bg="white")
-        self.page_label.pack(side=tk.LEFT)
-        
-        nav_frame.pack_propagate(False)
-        nav_frame.configure(height=30)
-        
-        tk.Button(nav_frame, text="◀", width=2,
-                 command=lambda: self.change_page(-1)).pack(side=tk.LEFT, padx=5)
-        tk.Button(nav_frame, text="▶", width=2,
-                 command=lambda: self.change_page(1)).pack(side=tk.LEFT)
-    
-    def create_footer(self, parent):
-        """Cria rodapé com botões"""
-        
-        tk.Button(parent, text="Visualizar PDF", width=15,
-                 command=self.generate_pdf).pack(side=tk.LEFT, padx=5)
-        
-        parent.pack_propagate(False)
-        parent.configure(height=40)
-        
-        tk.Button(parent, text="Cancelar", width=15,
-                 command=self.root.quit).pack(side=tk.RIGHT, padx=5)
-        
-        tk.Button(parent, text="Imprimir", width=15,
-                 bg="#0066CC", fg="white",
-                 command=self.print_action).pack(side=tk.RIGHT, padx=5)
-    
+    def load_single_image(self, image_path):
+        if not os.path.exists(image_path):
+            messagebox.showerror("Erro", f"Arquivo não encontrado:\n{image_path}")
+            return
+        exts = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
+        if os.path.splitext(image_path)[1].lower() not in exts:
+            messagebox.showerror("Erro",
+                f"Formato não suportado:\n{image_path}\n\nFormatos: {', '.join(exts)}")
+            return
+        filename = os.path.basename(image_path)
+        self.selected_images.append(
+            {'path': os.path.abspath(image_path), 'name': filename, 'copies': 1})
+        print(f"✓ Imagem carregada: {filename}")
+        self.update_images_list()
+        self.update_preview()
+
+    # ── Lista ─────────────────────────────────────────────────────────────────
     def update_images_list(self):
-        """Atualiza listbox de imagens"""
         self.images_listbox.delete(0, tk.END)
-        
-        for i, img in enumerate(self.selected_images):
-            display_text = f"{img['name']} ({img['copies']}x)"
-            self.images_listbox.insert(tk.END, display_text)
-    
+        for img in self.selected_images:
+            self.images_listbox.insert(tk.END, f"{img['name']} ({img['copies']}x)")
+
     def update_selected_copies(self):
-        """Atualiza número de cópias da imagem selecionada"""
         sel = self.images_listbox.curselection()
         if not sel:
             messagebox.showwarning("Aviso", "Selecione uma imagem")
             return
-        
-        idx = sel[0]
         try:
-            copies = int(self.copies_var.get())
-            if copies > 0:
-                self.selected_images[idx]['copies'] = copies
+            n = int(self.copies_var.get())
+            if n > 0:
+                self.selected_images[sel[0]]['copies'] = n
                 self.update_images_list()
                 self.update_preview()
         except ValueError:
             messagebox.showerror("Erro", "Número de cópias inválido")
-    
-    def update_preview(self):
-        """Atualiza preview das imagens na disposição com proporções corretas do papel"""
-        if not self.selected_images:
-            self.preview_canvas.delete("all")
-            self.preview_canvas.create_text(
-                self.preview_canvas.winfo_width()/2,
-                self.preview_canvas.winfo_height()/2,
-                text="Nenhuma imagem selecionada",
-                font=("Arial", 12), fill="#999"
-            )
-            return
-        
-        # Obter layout
-        layout_str = self.layout_var.get()
-        cols, rows = map(int, layout_str.split("x"))
-        
-        # NOVO: Obter tamanho e orientação do papel
-        paper_name = self.paper_var.get()
-        paper_width, paper_height = self.paper_sizes[paper_name]  # mm
-        
-        orientation = self.orientation_var.get()
-        if orientation == "Paisagem":
-            # Trocar dimensões para paisagem
-            paper_width, paper_height = paper_height, paper_width
-        
-        # NOVO: Calcular proporção do papel
-        paper_ratio = paper_width / paper_height
-        
-        # Limpar canvas
-        self.preview_canvas.delete("all")
-        
-        # Desenhar fundo cinza (para contrastar com papel branco)
-        canvas_w = self.preview_canvas.winfo_width()
-        canvas_h = self.preview_canvas.winfo_height()
-        self.preview_canvas.create_rectangle(
-            0, 0, canvas_w, canvas_h,
-            fill="#e0e0e0", outline="#ccc"
-        )
-        
-        # NOVO: Calcular tamanho do "papel" para caber no canvas mantendo proporção
-        padding = 20
-        available_w = canvas_w - padding * 2
-        available_h = canvas_h - padding * 2
-        
-        # Calcular dimensões do papel mantendo proporção
-        if available_w / available_h > paper_ratio:
-            # Canvas é mais largo que o papel
-            page_h = available_h
-            page_w = int(page_h * paper_ratio)
-        else:
-            # Canvas é mais alto que o papel
-            page_w = available_w
-            page_h = int(page_w / paper_ratio)
-        
-        # Centralizar o papel no canvas
-        page_x = int((canvas_w - page_w) / 2)
-        page_y = int((canvas_h - page_h) / 2)
-        
-        # NOVO: Desenhar retângulo representando a página
-        self.preview_canvas.create_rectangle(
-            page_x, page_y, page_x + page_w, page_y + page_h,
-            fill="white", outline="#333", width=2
-        )
-        
-        # NOVO: Adicionar label de orientação
-        orientation_text = f"{paper_name} - {orientation}"
-        self.preview_canvas.create_text(
-            page_x + page_w / 2, page_y - 10,
-            text=orientation_text,
-            font=("Arial", 9, "bold"),
-            fill="#333"
-        )
-        
-        # Calcular tamanho de cada célula dentro da página
-        margin = int(self.margin_var.get())
-        margin_pixels = int(margin / 210 * page_w)  # Converter mm para pixels baseado em A4
-        
-        available_page_w = page_w - margin_pixels * 2
-        available_page_h = page_h - margin_pixels * 2
-        
-        cell_w = available_page_w / cols
-        cell_h = available_page_h / rows
-        
-        # Obter todas as imagens com cópias repetidas
-        all_images = []
-        for img_data in self.selected_images:
-            for _ in range(img_data['copies']):
-                all_images.append(img_data)
-        
-        # Calcular número de páginas
-        images_per_page = cols * rows
-        total_pages = (len(all_images) + images_per_page - 1) // images_per_page
-        self.current_page = getattr(self, 'current_page', 0)
-        
-        if self.current_page >= total_pages:
-            self.current_page = 0
-        
-        # Atualizar label de página
-        self.page_label.config(text=f"Página {self.current_page + 1} de {total_pages}")
-        
-        # Desenhar imagens da página atual
-        start_idx = self.current_page * images_per_page
-        end_idx = min(start_idx + images_per_page, len(all_images))
-        
-        for pos, img_idx in enumerate(range(start_idx, end_idx)):
-            row = pos // cols
-            col = pos % cols
-            
-            x = int(page_x + margin_pixels + col * cell_w + 5)
-            y = int(page_y + margin_pixels + row * cell_h + 5)
-            w = int(cell_w - 10)
-            h = int(cell_h - 10)
-            
-            # Desenhar borda
-            self.preview_canvas.create_rectangle(
-                x, y, x + w, y + h,
-                outline="#ddd", width=1
-            )
-            
-            # Carregar e desenhar imagem
-            try:
-                img = Image.open(all_images[img_idx]['path'])
-                img.thumbnail((w - 10, h - 10), Image.Resampling.LANCZOS)
-                
-                # Converter para PhotoImage
-                photo = ImageTk.PhotoImage(img)
-                self.preview_images[img_idx] = photo  # Manter referência
-                
-                img_x = x + (w - photo.width()) // 2
-                img_y = y + (h - photo.height()) // 2
-                
-                self.preview_canvas.create_image(
-                    img_x, img_y,
-                    image=photo,
-                    anchor=tk.NW
-                )
-                
-                # Nome da imagem
-                self.preview_canvas.create_text(
-                    x + 5, y + h - 15,
-                    text=all_images[img_idx]['name'][:20],
-                    font=("Arial", 7),
-                    anchor=tk.SW,
-                    fill="#666"
-                )
-            except Exception as e:
-                self.preview_canvas.create_text(
-                    x + w/2, y + h/2,
-                    text=f"Erro: {str(e)[:30]}",
-                    font=("Arial", 7),
-                    fill="red"
-                )
-        
-        # Atualizar info
-        total_copies = sum(img['copies'] for img in self.selected_images)
-        self.info_label.config(
-            text=f"Total: {len(self.selected_images)} imagens | "
-                 f"{total_copies} cópias | {total_pages} página(s)"
-        )
-    
-    def change_page(self, direction):
-        """Muda página do preview"""
-        layout_str = self.layout_var.get()
-        cols, rows = map(int, layout_str.split("x"))
-        images_per_page = cols * rows
-        
-        # Contar total de imagens com cópias
-        all_images_count = sum(img['copies'] for img in self.selected_images)
-        total_pages = (all_images_count + images_per_page - 1) // images_per_page
-        
-        self.current_page = getattr(self, 'current_page', 0) + direction
-        
-        if self.current_page < 0:
-            self.current_page = total_pages - 1
-        elif self.current_page >= total_pages:
-            self.current_page = 0
-        
-        self.update_preview()
-    
+
     def add_images(self):
-        """Adiciona imagens"""
         files = filedialog.askopenfilenames(
             title="Selecionar Imagens",
             filetypes=[("Imagens", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff"),
-                      ("Todos", "*.*")]
-        )
-        
-        for file in files:
-            # Verificar se já existe
-            if not any(img['path'] == file for img in self.selected_images):
-                self.selected_images.append({
-                    'path': file,
-                    'name': os.path.basename(file),
-                    'copies': 1
-                })
-        
+                       ("Todos", "*.*")])
+        for f in files:
+            if not any(img['path'] == f for img in self.selected_images):
+                self.selected_images.append(
+                    {'path': f, 'name': os.path.basename(f), 'copies': 1})
         self.update_images_list()
         self.update_preview()
-    
+
     def remove_image(self):
-        """Remove imagem selecionada"""
         sel = self.images_listbox.curselection()
         if not sel:
             messagebox.showwarning("Aviso", "Selecione uma imagem")
             return
-        
-        idx = sel[0]
-        del self.selected_images[idx]
+        del self.selected_images[sel[0]]
         self.update_images_list()
         self.update_preview()
-    
+
     def clear_all(self):
-        """Limpa todas as imagens"""
         if messagebox.askyesno("Confirmar", "Remover todas as imagens?"):
             self.selected_images = []
             self.update_images_list()
             self.update_preview()
-    
-    def generate_pdf(self):
-        """Gera PDF com as imagens para visualização"""
-        if not REPORTLAB_AVAILABLE:
-            messagebox.showerror("Erro", 
-                "reportlab não está instalado.\n"
-                "Instale com: pip3 install reportlab")
+
+    # ── Preview ───────────────────────────────────────────────────────────────
+    def update_preview(self):
+        cv = self.preview_canvas
+        cv.delete("all")
+        cw = cv.winfo_width()
+        ch = cv.winfo_height()
+
+        # Aguarda a janela ter dimensões reais
+        if cw < 10:
+            self.root.after(80, self.update_preview)
             return
-        
+
         if not self.selected_images:
-            messagebox.showwarning("Aviso", "Nenhuma imagem selecionada")
+            cv.create_rectangle(0, 0, cw, ch, fill=self.c('canvas_bg'), outline='')
+            cv.create_text(cw / 2, ch / 2,
+                           text="Nenhuma imagem selecionada",
+                           font=("Arial", 12), fill=self.c('fg_secondary'))
             return
-        
-        try:
-            # Abrir diálogo para salvar
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".pdf",
-                filetypes=[("PDF", "*.pdf"), ("Todos", "*.*")],
-                initialfile="impressao.pdf"
-            )
-            
-            if not filename:
-                return
-            
-            # Obter layout
-            layout_str = self.layout_var.get()
-            cols, rows = map(int, layout_str.split("x"))
-            
-            # Tamanho do papel
-            paper_size = self.paper_sizes[self.paper_var.get()]
-            if self.paper_var.get() == "A4":
-                from reportlab.lib.pagesizes import A4
-                pagesize = A4
-            elif self.paper_var.get() == "A3":
-                from reportlab.lib.pagesizes import A3
-                pagesize = A3
-            elif self.paper_var.get() == "A5":
-                from reportlab.lib.pagesizes import A5
-                pagesize = A5
-            else:  # Carta
-                from reportlab.lib.pagesizes import letter
-                pagesize = letter
-            
-            # NOVO: Aplicar orientação
-            orientation = self.orientation_var.get()
-            if orientation == "Paisagem":
-                # Trocar dimensões para paisagem (rotacionar 90 graus)
-                pagesize = (pagesize[1], pagesize[0])
-            
-            # Margem em pixels
-            margin_mm = int(self.margin_var.get())
-            from reportlab.lib.units import mm
-            margin = margin_mm * mm
-            
-            # Criar PDF
-            c = reportlab_canvas.Canvas(filename, pagesize=pagesize)
-            page_width, page_height = pagesize
-            
-            # Calcular dimensões das células
-            cell_width = (page_width - 2 * margin) / cols
-            cell_height = (page_height - 2 * margin) / rows
-            
-            # Obter todas as imagens com cópias
-            all_images = []
-            for img_data in self.selected_images:
-                for _ in range(img_data['copies']):
-                    all_images.append(img_data['path'])
-            
-            # Desenhar imagens
-            images_per_page = cols * rows
-            total_pages = (len(all_images) + images_per_page - 1) // images_per_page
-            
-            for page_num in range(total_pages):
-                start_idx = page_num * images_per_page
-                end_idx = min(start_idx + images_per_page, len(all_images))
-                
-                # Desenhar imagens desta página
-                for pos in range(start_idx, end_idx):
-                    row = (pos - start_idx) // cols
-                    col = (pos - start_idx) % cols
-                    
-                    x = margin + col * cell_width
-                    y = page_height - margin - (row + 1) * cell_height
-                    
-                    try:
-                        img = Image.open(all_images[pos])
-                        # Calcular tamanho mantendo proporção
-                        img_w = cell_width - 10 * mm
-                        img_h = cell_height - 10 * mm
-                        
-                        w, h = img.size
-                        ratio = min(img_w / w, img_h / h)
-                        new_w = int(w * ratio)
-                        new_h = int(h * ratio)
-                        
-                        # Centralizar imagem na célula
-                        img_x = x + (cell_width - new_w) / 2
-                        img_y = y + (cell_height - new_h) / 2
-                        
-                        c.drawImage(all_images[pos], img_x, img_y,
-                                   width=new_w, height=new_h)
-                    except Exception as e:
-                        c.drawString(x + 10, y + 10, f"Erro: {str(e)[:30]}")
-                
-                # Nova página se não for a última
-                if page_num < total_pages - 1:
-                    c.showPage()
-            
-            c.save()
-            messagebox.showinfo("Sucesso", 
-                f"PDF gerado com sucesso!\n{filename}")
-            
-            # Abrir PDF
-            os.system(f'xdg-open "{filename}" 2>/dev/null &')
-            
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao gerar PDF:\n{e}")
-            traceback.print_exc()
-    
-    def print_action(self):
-        """Realiza a impressão"""
-        if not self.selected_images:
-            messagebox.showwarning("Aviso", "Nenhuma imagem selecionada")
-            return
-        
-        printer = self.printer_var.get()
-        
-        if printer == "Nenhuma impressora" or printer == "Simular (PDF)":
-            messagebox.showinfo("Simulação",
-                "Gerando PDF para visualização...\n"
-                "Use 'Visualizar PDF' para ver o resultado final")
-            self.generate_pdf()
-            return
-        
-        # Impressão real via CUPS
-        if not CUPS_AVAILABLE or not self.cups_conn:
-            messagebox.showerror("Erro", 
-                "CUPS não está disponível.\n"
-                "Instale com: sudo apt-get install python3-cups")
-            return
-        
-        try:
-            # Gerar PDF temporário
-            import tempfile
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-                tmp_path = tmp.name
-            
-            # Usar a função de geração de PDF
-            self.generate_pdf_temp(tmp_path)
-            
-            # Enviar para impressora
-            job_id = self.cups_conn.printFile(
-                printer,
-                tmp_path,
-                "Impressão de Imagens",
-                {
-                    "media": self.paper_var.get(),
-                    "print-quality": self.quality_var.get()
-                }
-            )
-            
-            messagebox.showinfo("Sucesso",
-                f"✓ Impressão enviada!\n"
-                f"Impressora: {printer}\n"
-                f"Job ID: {job_id}")
-            
-            # Limpar arquivo temporário
-            import atexit
-            atexit.register(lambda: os.unlink(tmp_path) if os.path.exists(tmp_path) else None)
-            
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao imprimir:\n{e}")
-            traceback.print_exc()
-    
-    def generate_pdf_temp(self, filename):
-        """Gera PDF temporário (usado internamente)"""
-        if not REPORTLAB_AVAILABLE:
-            raise Exception("reportlab não está instalado")
-        
-        # Similar a generate_pdf mas sem diálogo
-        layout_str = self.layout_var.get()
-        cols, rows = map(int, layout_str.split("x"))
-        
-        if self.paper_var.get() == "A4":
-            from reportlab.lib.pagesizes import A4
-            pagesize = A4
-        elif self.paper_var.get() == "A3":
-            from reportlab.lib.pagesizes import A3
-            pagesize = A3
-        elif self.paper_var.get() == "A5":
-            from reportlab.lib.pagesizes import A5
-            pagesize = A5
+
+        cols, rows  = map(int, self.layout_var.get().split("x"))
+        pw, ph      = self.paper_sizes[self.paper_var.get()]
+        if self.orientation_var.get() == "Paisagem":
+            pw, ph = ph, pw
+        paper_ratio = pw / ph
+
+        # Fundo do canvas
+        cv.create_rectangle(0, 0, cw, ch, fill=self.c('canvas_bg'), outline='')
+
+        # Dimensões do "papel" no canvas
+        pad     = 20
+        avail_w = cw - pad * 2
+        avail_h = ch - pad * 2
+        if avail_w / max(avail_h, 1) > paper_ratio:
+            page_h = avail_h
+            page_w = int(page_h * paper_ratio)
         else:
-            from reportlab.lib.pagesizes import letter
-            pagesize = letter
-        
-        # NOVO: Aplicar orientação também em generate_pdf_temp
-        orientation = self.orientation_var.get()
-        if orientation == "Paisagem":
+            page_w = avail_w
+            page_h = int(page_w / paper_ratio)
+
+        page_x = int((cw - page_w) / 2)
+        page_y = int((ch - page_h) / 2)
+
+        # Sombra
+        shadow = "#555555" if self.current_theme == 'dark' else "#bbbbbb"
+        cv.create_rectangle(page_x + 4, page_y + 4,
+                            page_x + page_w + 4, page_y + page_h + 4,
+                            fill=shadow, outline='')
+        # Papel
+        cv.create_rectangle(page_x, page_y, page_x + page_w, page_y + page_h,
+                            fill=self.c('preview_paper'), outline=self.c('border'), width=1)
+        # Rótulo
+        cv.create_text(page_x + page_w / 2, page_y - 10,
+                       text=f"{self.paper_var.get()} — {self.orientation_var.get()}",
+                       font=("Arial", 9, "bold"), fill=self.c('preview_text'))
+
+        # Células
+        margin_px = int(int(self.margin_var.get()) / 210 * page_w)
+        cell_w    = (page_w - margin_px * 2) / cols
+        cell_h    = (page_h - margin_px * 2) / rows
+
+        all_images = []
+        for img_data in self.selected_images:
+            for _ in range(img_data['copies']):
+                all_images.append(img_data)
+
+        ipp         = cols * rows
+        total_pages = max(1, (len(all_images) + ipp - 1) // ipp)
+        if self.current_page >= total_pages:
+            self.current_page = 0
+
+        self.page_label.config(text=f"Página {self.current_page + 1} de {total_pages}")
+
+        start = self.current_page * ipp
+        for pos, idx in enumerate(range(start, min(start + ipp, len(all_images)))):
+            row = pos // cols
+            col = pos % cols
+            x   = int(page_x + margin_px + col * cell_w + 5)
+            y   = int(page_y + margin_px + row * cell_h + 5)
+            w   = int(cell_w - 10)
+            h   = int(cell_h - 10)
+
+            cv.create_rectangle(x, y, x + w, y + h,
+                                outline=self.c('border'), width=1,
+                                fill=self.c('preview_paper'))
+            try:
+                img = Image.open(all_images[idx]['path'])
+                img.thumbnail((w - 10, h - 10), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                self.preview_images[idx] = photo  # mantém referência
+                img_x = x + (w - photo.width()) // 2
+                img_y = y + (h - photo.height()) // 2
+                cv.create_image(img_x, img_y, image=photo, anchor=tk.NW)
+                cv.create_text(x + 5, y + h - 12,
+                               text=all_images[idx]['name'][:20],
+                               font=("Arial", 7), anchor=tk.SW,
+                               fill=self.c('fg_secondary'))
+            except Exception as e:
+                cv.create_text(x + w / 2, y + h / 2,
+                               text=f"Erro: {str(e)[:30]}",
+                               font=("Arial", 7), fill="red")
+
+        total_copies = sum(img['copies'] for img in self.selected_images)
+        self.info_label.config(
+            text=f"Total: {len(self.selected_images)} imagem(ns) | "
+                 f"{total_copies} cópia(s) | {total_pages} página(s)")
+
+    def change_page(self, direction):
+        cols, rows  = map(int, self.layout_var.get().split("x"))
+        ipp         = cols * rows
+        total       = sum(img['copies'] for img in self.selected_images)
+        total_pages = max(1, (total + ipp - 1) // ipp)
+        self.current_page = (self.current_page + direction) % total_pages
+        self.update_preview()
+
+    # ── PDF ───────────────────────────────────────────────────────────────────
+    def _build_pdf(self, filename):
+        if not REPORTLAB_AVAILABLE:
+            raise Exception("reportlab não instalado — pip3 install reportlab")
+
+        cols, rows = map(int, self.layout_var.get().split("x"))
+        _sizes     = {"A4": A4, "A3": A3, "A5": A5, "Carta": letter}
+        pagesize   = _sizes.get(self.paper_var.get(), A4)
+        if self.orientation_var.get() == "Paisagem":
             pagesize = (pagesize[1], pagesize[0])
-        
-        margin_mm = int(self.margin_var.get())
-        from reportlab.lib.units import mm
-        margin = margin_mm * mm
-        
-        c = reportlab_canvas.Canvas(filename, pagesize=pagesize)
-        page_width, page_height = pagesize
-        
-        cell_width = (page_width - 2 * margin) / cols
-        cell_height = (page_height - 2 * margin) / rows
-        
+
+        margin = int(self.margin_var.get()) * mm
+        c      = reportlab_canvas.Canvas(filename, pagesize=pagesize)
+        pw, ph = pagesize
+        cell_w = (pw - 2 * margin) / cols
+        cell_h = (ph - 2 * margin) / rows
+
         all_images = []
         for img_data in self.selected_images:
             for _ in range(img_data['copies']):
                 all_images.append(img_data['path'])
-        
-        images_per_page = cols * rows
-        total_pages = (len(all_images) + images_per_page - 1) // images_per_page
-        
+
+        ipp         = cols * rows
+        total_pages = max(1, (len(all_images) + ipp - 1) // ipp)
+
         for page_num in range(total_pages):
-            start_idx = page_num * images_per_page
-            end_idx = min(start_idx + images_per_page, len(all_images))
-            
-            for pos in range(start_idx, end_idx):
-                row = (pos - start_idx) // cols
-                col = (pos - start_idx) % cols
-                
-                x = margin + col * cell_width
-                y = page_height - margin - (row + 1) * cell_height
-                
+            start = page_num * ipp
+            for pos, abs_pos in enumerate(range(start, min(start + ipp, len(all_images)))):
+                row  = pos // cols
+                col  = pos % cols
+                x    = margin + col * cell_w
+                y    = ph - margin - (row + 1) * cell_h
                 try:
-                    img = Image.open(all_images[pos])
-                    img_w = cell_width - 10 * mm
-                    img_h = cell_height - 10 * mm
-                    
-                    w, h = img.size
-                    ratio = min(img_w / w, img_h / h)
-                    new_w = int(w * ratio)
-                    new_h = int(h * ratio)
-                    
-                    img_x = x + (cell_width - new_w) / 2
-                    img_y = y + (cell_height - new_h) / 2
-                    
-                    c.drawImage(all_images[pos], img_x, img_y,
-                               width=new_w, height=new_h)
-                except:
-                    pass
-            
+                    img      = Image.open(all_images[abs_pos])
+                    iw, ih   = cell_w - 10 * mm, cell_h - 10 * mm
+                    w0, h0   = img.size
+                    ratio    = min(iw / w0, ih / h0)
+                    nw, nh   = int(w0 * ratio), int(h0 * ratio)
+                    c.drawImage(all_images[abs_pos],
+                                x + (cell_w - nw) / 2,
+                                y + (cell_h - nh) / 2,
+                                width=nw, height=nh)
+                except Exception as e:
+                    c.drawString(x + 10, y + 10, f"Erro: {str(e)[:30]}")
             if page_num < total_pages - 1:
                 c.showPage()
-        
+
         c.save()
 
+    def generate_pdf(self):
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showerror("Erro", "reportlab não instalado.\npip3 install reportlab")
+            return
+        if not self.selected_images:
+            messagebox.showwarning("Aviso", "Nenhuma imagem selecionada")
+            return
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf"), ("Todos", "*.*")],
+            initialfile="impressao.pdf")
+        if not filename:
+            return
+        try:
+            self._build_pdf(filename)
+            messagebox.showinfo("Sucesso", f"PDF gerado com sucesso!\n{filename}")
+            os.system(f'xdg-open "{filename}" 2>/dev/null &')
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao gerar PDF:\n{e}")
+            traceback.print_exc()
+
+    # ── Impressão ─────────────────────────────────────────────────────────────
+    def print_action(self):
+        if not self.selected_images:
+            messagebox.showwarning("Aviso", "Nenhuma imagem selecionada")
+            return
+
+        printer = self.printer_var.get()
+
+        if printer in ("Nenhuma impressora", "Simular (PDF)"):
+            messagebox.showinfo("Simulação",
+                "Nenhuma impressora CUPS encontrada.\n"
+                "Gerando PDF para visualização...")
+            self.generate_pdf()
+            return
+
+        if not CUPS_AVAILABLE or not self.cups_conn:
+            messagebox.showerror("Erro",
+                "CUPS não está disponível.\n"
+                "Instale com: sudo apt-get install python3-cups")
+            return
+
+        try:
+            import tempfile, atexit
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+                tmp_path = tmp.name
+
+            self._build_pdf(tmp_path)
+
+            job_id = self.cups_conn.printFile(
+                printer, tmp_path, "Impressão de Imagens",
+                {"media":         self.paper_var.get(),
+                 "print-quality": self.quality_var.get()})
+
+            messagebox.showinfo("Sucesso",
+                f"✓ Impressão enviada!\nImpressora: {printer}\nJob ID: {job_id}")
+            atexit.register(
+                lambda: os.unlink(tmp_path) if os.path.exists(tmp_path) else None)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao imprimir:\n{e}")
+            traceback.print_exc()
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 def main():
     """
-    Função principal
-    
     Uso:
-        python3 print_images_real.py              # Modo normal: escaneia pasta
-        python3 print_images_real.py imagem.jpg   # Modo rápido: carrega uma imagem
+        python3 print_images.py              # escaneia pasta atual
+        python3 print_images.py imagem.jpg   # abre uma imagem específica
     """
-    # NOVO: verificar argumentos de linha de comando
-    image_path = None
-    
-    if len(sys.argv) > 1:
-        # Se houver argumento, usar como caminho da imagem
-        image_path = sys.argv[1]
-    
     root = tk.Tk()
-    # NOVO: passar o caminho da imagem para a classe
-    app = ImagePrintDialog(root, image_path=image_path)
+    ImagePrintDialog(root, image_path=sys.argv[1] if len(sys.argv) > 1 else None)
     root.mainloop()
+
 
 if __name__ == "__main__":
     main()
